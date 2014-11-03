@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-This script containts and plots some common covariance functions with their
-analytical Fourier transforms.
+This script containts and plots some common well-tested covariance functions
+with their analytical Fourier transforms.
 """
 
 #---- common imports ----
@@ -12,26 +12,83 @@ import matplotlib.pyplot as plt
 PI = np.pi
 
 #==== DIFFERENT SPECTRA AND CORRELATION FUNCTIONS ====
-def covar_exponential3d(dist,scale,sigma=1.):
+#---- exponential ----
+def covar_exponential(dist,scale,sigma=1.):
     return sigma**2*np.exp(-dist*scale)
 
-def power_exponential3d(rho,scale,sigma=1.):
-    a = 1/scale
-    kappa = 8.*PI*sigma**2*a**3
-    return kappa/(1+(2.*np.pi*rho*a)**2)**2
+def power_exponential1d(rho,scale,sigma=1.):
+    a = 1./scale
+    kappa2 = 2.*sigma**2*a
+    return kappa2/(1+(rho*a)**2)
 
-def covar_gaussian3d(dist,scale,sigma=1.):
+def power_exponential2d(rho,scale,sigma=1.):
+    a = 1./scale
+    kappa2 = 2.*PI*sigma**2*a**2
+    return kappa2/(1+(rho*a)**2)**(3./2.)
+
+def power_exponential3d(rho,scale,sigma=1.):
+    a = 1./scale
+    kappa2 = 8.*PI*sigma**2*a**3
+    return kappa2/(1+(rho*a)**2)**2
+
+#---- gaussian ----
+def covar_gaussian(dist,scale,sigma=1.):
     return sigma**2*np.exp(-dist**2*scale**2)
+
+def power_gaussian1d(rho,scale,sigma=1.):
+    a = 1./scale
+    kappa2 = sigma**2*a*PI**(1./2.)
+    return kappa2*np.exp(-(rho/scale)**2/4.)
+
+def power_gaussian2d(rho,scale,sigma=1.):
+    a = 1./scale
+    kappa2 = sigma**2*a**2*PI
+    return kappa2*np.exp(-(rho/scale)**2/4.)
 
 def power_gaussian3d(rho,scale,sigma=1.):
     a = 1./scale
-    kappa = sigma**2*a**3*np.pi**(3./2.)
-    return kappa*np.exp(-(rho/scale)**2/4.)
+    kappa2 = sigma**2*a**3*PI**(3./2.)
+    return kappa2*np.exp(-(rho/scale)**2/4.)
 
 #==== MAIN AND TEST FUNCTIONS ====
 def main():
-    test_3d()
-    plt.show()
+    test_normalizations()
+
+def test_normalizations():
+    scale = 30
+
+    #--- set up radial frequency space  ---
+    krho = 128
+    size = 1.0
+    krhos = 2*PI/size*np.arange(krho)
+
+    #--- testing exponential covariance functions ---
+    #3d:
+    power = power_exponential3d(krhos,scale)
+    power_tot = np.sum(4.*PI*krhos**2*(size/2./PI)**2*power) 
+    print 'integrated power in 3d is:',power_tot
+    #2d:
+    power = power_exponential2d(krhos,scale)
+    power_tot = np.sum(2.*PI*krhos*(size/2./PI)*power) 
+    print 'integrated power in 2d is:',power_tot
+    #1d:
+    power = power_exponential1d(krhos,scale)
+    power_tot = np.sum(2*power[1:])+power[0]
+    print 'integrated power in 1d is:',power_tot
+
+    #--- testing Gaussian covariance functions ---
+    #3d:
+    power = power_gaussian3d(krhos,scale)
+    power_tot = np.sum(4.*PI*krhos**2*(size/2./PI)**2*power)
+    print 'integrated power in 3d is:',power_tot
+    #2d:
+    power = power_gaussian2d(krhos,scale) 
+    power_tot = np.sum(2.*PI*krhos*(size/2./PI)*power)
+    print 'integrated power in 2d is:',power_tot
+    #1d:
+    power = power_gaussian1d(krhos,scale)
+    power_tot = np.sum(2.*power[1:])+power[0]
+    print 'integrated power in 1d is:',power_tot
 
 def test_3d():
     """plots fft of covariance functions against their analytical spectrum"""
@@ -47,7 +104,7 @@ def test_3d():
                                c_int,c_int,c_int]
 
     #---- start function ----
-    scale    = 20.
+    scale    = 30.
     nx,ny,nz = 96,96,96
 
     #--- set up frequency space for real fft (z dimension is symmetric) ---
@@ -59,15 +116,15 @@ def test_3d():
     kx_grid,ky_grid,kz_grid = np.meshgrid(kxs,kys,kzs,indexing='ij')
 
     #--- test normalization of cv functions ---
-    power_test = power_gaussian3d(kzs,scale) #evaluate at 2PI multiples
+    power_test = power_exponential3d(kzs,scale) #evaluate at 2PI multiples
     power_tot = np.sum(4.*PI*kzs**2*(size/2./PI)**2*power_test) #divide by size/2PI due to fft normalization
-    print 'integrated Guassian power is:',power_tot
+    print 'integrated power is:',power_tot
 
     #create complex coefficients with power one
     coeffs = np.zeros( (kx,ky,kz),dtype=np.complex)
     coeffs.real = np.random.normal(loc=0,scale=1,size=kx*ky*kz).reshape(kx,ky,kz)/np.sqrt(2)
     coeffs.imag = np.random.normal(loc=0,scale=1,size=kx*ky*kz).reshape(kx,ky,kz)/np.sqrt(2)
-    coeffs *= np.sqrt(power_gaussian3d(np.sqrt(kx_grid**2+ky_grid**2+kz_grid**2), scale))
+    coeffs *= np.sqrt(power_exponential3d(np.sqrt(kx_grid**2+ky_grid**2+kz_grid**2), scale))
 
     #compute model via (real) inverse Fourier transform
     model = np.fft.irfftn(np.fft.fftshift(coeffs,axes=(0,1)),s=(nx,ny,nz))
@@ -100,7 +157,7 @@ def test_3d():
     #plot covariance in dependence of distance
     plt.plot(distance_matrix,covariance_matrix,'o')
     plt.plot(centers,binned_covariance,'-')
-    plt.plot(centers,covar_gaussian3d(centers,scale))
+    plt.plot(centers,covar_exponential3d(centers,scale))
 
     #compute and plot histograms
     modelmax = np.abs(model).max()
