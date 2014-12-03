@@ -12,12 +12,13 @@ import matplotlib.pyplot as plt
 from scipy.special import sph_jn
 from scipy.linalg import eigh
 from scipy.ndimage import map_coordinates
+from ConfigParser import SafeConfigParser
 import numpy as np
 from evtk.hl import gridToVTK
 
 #custom modules
 sys.path.append(os.path.join(os.path.dirname(__file__),'../CommonModules'))
-from CovarianceFunctions import power_exponential3d, power_gaussian3d
+from CovarianceFunctions import power_exponential3d, power_gaussian3d, power_scalefree3d
 from PartitionFunctions import make_partition
 from FigStyle import style_gji
 mpl.rcParams.update(style_gji)
@@ -125,7 +126,7 @@ class LayeredSphere(object):
         ax.set_xticks([])
         fig.tight_layout(pad=0.1)
 
-    def write_vtk(s):
+    def write_vtk(s):    
         data = s.get_model()
         rgrid,tgrid,pgrid = np.meshgrid(s.radii,s.thetas,s.phis,indexing='ij')
         xs = rgrid*np.sin(tgrid)*np.cos(pgrid)
@@ -158,6 +159,72 @@ class LayeredCovarianceMatrix(object):
         s.cvmatrix = np.zeros( (s.nl,s.nr,s.nr) )
 
 
+    def fillfromfile(s,fname):
+        """
+        fills covariance matrix from a layer file (.mod)
+        """
+        #---- read model configuration from parameter file ----
+        config = SafeConfigParser()
+        config.read(fname)
+
+        rposition  = 6371.-np.fromstring(config.get('layers','rposition'),sep=' ')[::-1]
+        rtransit   = np.fromstring(config.get('layers','rtransit'),sep=' ')[::-1]
+
+        mtype      = config.get('medium','type').split()[::-1]
+        power_degs = np.fromstring(config.get('medium','power_degs'),sep=' ')[::-1]
+        power_vals = np.fromstring(config.get('medium','power_vals'),sep=' ')[::-1]
+
+        aniso      = np.fromstring(config.get('anisotropy','aniso'),sep=' ')[::-1]
+        liso       = np.fromstring(config.get('anisotropy','liso'),sep=' ')[::-1]
+        diso       = np.fromstring(config.get('anisotropy','diso'),sep=' ')[::-1]
+
+        #---- compute some derived parameters ----
+        nlayers = len(mtype)
+        assert len(rposition) == nlayers+1
+        assert len(rtransit) == nlayers+1
+        npowers = len(power_degs)
+        assert len(aniso) == nlayers*npowers
+        assert len(liso)  == nlayers*npowers
+        assert len(diso)  == nlayers*npowers
+
+        print '---- building model from configuration file ----'
+        print fname
+
+        #---- input parameters ----
+        nrhos = int(s.nr/2.)
+        rhos  = np.arange(nrhos)
+
+        #---- partition the mesh into a set of layers with smooth transition ----
+        tfuncs = make_partition(rposition,rtransit,s.radii)
+        pspectra = np.zeros( (nlayers,nrhos) )
+        for imedium,medium in enumerate(mtype):
+            if medium == 'sf':
+                pspectra[imedium] = power_scalefree3d(2*PI*rhos,0.01)*power_vals[imedium]
+
+        #fig,ax = plt.subplots(1,2)
+        #ax[0].set_title('transfer functions')
+        #ax[1].set_title('power spectra')
+        #for tfunc in tfuncs:
+        #    ax[0].plot(s.radii,tfunc)
+        #for power in pspectra:
+        #    ax[1].plot(power)
+
+        #---- create and show covariance matrix ----
+        matrices = []
+        for ilayer in range(nlayers):
+            tfuncs_ani = make_partition([-1,liso[ilayer],s.nl],[0.,diso[ilayer],0.],s.ls)
+            stretch = aniso[ilayer]*tfuncs_ani[0] + tfuncs_ani[1]*1.0
+            matrices.append(s.get_anisospherical(rhos,pspectra[ilayer],stretch))
+
+        for ilayer1 in range(nlayers):
+            #fill layer:
+            partition = np.outer(tfuncs[ilayer1],tfuncs[ilayer1])
+            s.cvmatrix += matrices[ilayer1]*partition
+            for ilayer2 in range(ilayer1+1,nlayers):
+                #fill crossterms:
+                partition = np.outer(tfuncs[ilayer1],tfuncs[ilayer2])
+                s.cvmatrix += 0.5*(matrices[ilayer1]+matrices[ilayer2])\
+                                 *(partition+partition.transpose())
 
     #---- different covariance functions ----
     def get_isospherical(s, rhos, power, rtransfer=None,ltransfer=None):
@@ -183,12 +250,10 @@ class LayeredCovarianceMatrix(object):
         #if rtransfer is not None:
         #    cvmatrix[:]*=np.outer(np.sqrt(rtransfer),np.sqrt(rtransfer))
         if rtransfer is not None:
-            cvmatrix *= rtransfer.reshape(1,s.nr,1)
+            cvmatrix *= rtransfer
         if ltransfer is not None:
             cvmatrix   *=ltransfer.reshape(s.nl,1,1)
         return cvmatrix
-
-
 
     def get_anisospherical(s, rhos, power, stretch, rtransfer=None):
         print "computing anisotropic cv matrix from cartesian power spectrum"
@@ -197,7 +262,7 @@ class LayeredCovarianceMatrix(object):
         bessel = np.zeros( (s.nl,nrho,s.nr) )
         for ir in range(s.nr):
             for irho in range(nrho):#the factor 1/(2*s.rmax) ensures good sampling
-                bessel[:,irho,ir] = np.sqrt(4*PI*rhos[irho]**2*power[irho]) *\
+                bessel[s.lmin:,irho,ir] = np.sqrt(4*PI*rhos[irho]**2*power[irho]) *\
                                     sph_jn(s.lmax,2*np.pi*rhos[irho]*s.radii[ir]/(2*s.rmax))[0]
 
         #directly compute cvmatrix
@@ -219,15 +284,43 @@ class LayeredCovarianceMatrix(object):
         #explicitely free bessel function memory and damp with transfer function
         del bessel
 
-        #if rtransfer is not None:
-        #    cvmatrix[:]*=np.outer(np.sqrt(rtransfer),np.sqrt(rtransfer))
-
         if rtransfer is not None:
-            cvmatrix *= rtransfer.reshape(1,s.nr,1)
+            cvmatrix *= rtransfer
 
         return cvmatrix
 
+    def get_hpower_from_3dpower(s,rhos,power,radius):
+        print "computing horizontal power from 3D Fourier power"
+        nrho = len(rhos)
+        ls = np.arange(s.nl)
 
+        #compute integrand
+        bessel_matrix = np.zeros( (nrho,s.nl) )
+        for irho in range(nrho):
+            bessel_matrix[irho] = 4*PI*rhos[irho]**2*sph_jn(s.lmax,2*PI*rhos[irho]*radius/(2*s.rmax))[0]**2
+        plt.figure()
+        plt.imshow(bessel_matrix)
+
+        hpower = np.dot(power,bessel_matrix)*(2*ls+1)
+        return ls,hpower
+
+    def get_3dpower_from_hpower(s,hpower,radius):
+        print "computing 3d Fourier power from horizontal power spectrum"
+        nrho = int(s.nl)
+        rhos = np.arange(nrho)
+        ls = np.arange(len(hpower))
+
+        #compute integrand
+        bessel_matrix = np.zeros( (nrho,s.nl) )
+        for irho in range(nrho):
+            bessel_matrix[irho] = 4*PI*rhos[irho]**2*sph_jn(s.lmax,2*np.pi*rhos[irho]*radius/(2*s.rmax))[0]**2
+
+        inv_matrix = np.linalg.pinv(bessel_matrix,rcond=1e-2)
+        power = np.dot(hpower/(2*ls+1),inv_matrix)
+        return rhos,power
+
+    def fill_iso_from_hpower(s,hpower,ir):
+        s.cvmatrix += s.get_isocvmatrix_from_hpower(hpower,ir)
 
     def fill_isospherical(s,rhos,power,rtransfer=None):
         s.cvmatrix += s.get_isospherical(rhos,power,rtransfer=rtransfer)
@@ -237,18 +330,25 @@ class LayeredCovarianceMatrix(object):
         s.cvmatrix += s.get_anisospherical(rhos,power,aniso,rtransfer=rtransfer)
         s.cvmatrix = 0.5*(s.cvmatrix + s.cvmatrix.transpose((0,2,1)))
 
-    def fill_horizpower(s,hpower,rtransfer):
+    def fill_horizpower(s,hpower):
         """hpower: nl x nr array with horizontal power spectrum"""
-        s.cvmatrix[:,range(s.nr),range(s.nr)] += hpower * rtransfer
+        s.cvmatrix[:,range(s.nr),range(s.nr)] += hpower
         s.cvmatrix = 0.5*(s.cvmatrix + s.cvmatrix.transpose((0,2,1)))
 
-    def fill_crosspower(s,vcorr,rtransfer):
+    def fill_crosspower(s,vcorr):
         """vcorr: function that takes arguments (distances,degree)"""
+        cvmatrix_buf = np.empty( (s.nr,s.nr) )
         for il in range(s.nl):
             for ir1 in range(s.nr):
-                distances = np.abs(s.radii[ir1] - s.radii[ir1:])
-                s.cvmatrix[il,ir1] += vcorr(distances,il)*rtransfer[ir1]
-        s.cvmatrix = 0.5*(s.cvmatrix + s.cvmatrix.transpose((0,2,1)))
+                hpower1 = s.cvmatrix[il,ir1,ir1]
+                hpowers2 = np.diagonal(s.cvmatrix[il])
+                distances = np.abs(s.radii[ir1] - s.radii)/s.radii[-1]
+                hpowers = np.sqrt(hpower1*hpowers2)
+                cvmatrix_buf[ir1] = hpowers*vcorr(distances,il)
+            cvmatrix_buf[range(s.nr),range(s.nr)] = 0.
+            s.cvmatrix[il] += cvmatrix_buf
+        #s.cvmatrix = 0.5*(s.cvmatrix + s.cvmatrix.transpose((0,2,1)))
+
 
     #---- Eigenvector basis ----
     def get_basis(s,order,thresh=0.2):
@@ -258,7 +358,7 @@ class LayeredCovarianceMatrix(object):
         return w[ithresh],E[:,ithresh]
 
     def plot_basis(s,order,thresh=0.2):
-        w,E = s.get_basis(order,thresh=0.) #get all eigenvalues
+        w,E = s.get_basis(order,thresh=thresh) #get all eigenvalues
         valmax = w.max()
         ithresh = w>(valmax*thresh)
         fig,axes = plt.subplots(1,2)
@@ -268,7 +368,9 @@ class LayeredCovarianceMatrix(object):
             color = mpl.cm.jet(evalue/valmax)
             axes[0].plot(s.radii,evector,c=color)
 
-
+    def get_hpower(s):
+        hpower = np.diagonal(s.cvmatrix,axis1=1,axis2=2)*(2*s.ls.reshape(s.nl,1)+1)
+        return hpower
 
     #---- plotting covariance matrix and power spectrum (diagonal of cvmatrix) ----
     def plot_cvmatrix(s, order, loglog=False, totpower=False):
@@ -287,7 +389,7 @@ class LayeredCovarianceMatrix(object):
         axes[0].set_ylim(s.rmax,s.rmin)
 
         #plot cvmatrix diagonal (expected power spectrum)
-        hpower = np.diagonal(s.cvmatrix,axis1=1,axis2=2)*(2*s.ls.reshape(s.nl,1)+1)*s.ls.reshape(s.nl,1)
+        hpower = s.get_hpower()*s.ls.reshape(s.nl,1)
         lgrid,rgrid = np.meshgrid(s.ls,s.radii,indexing='ij')
         mesh = axes[1].pcolormesh(lgrid,rgrid,hpower,shading='gouraud')
         mesh.set_rasterized(True)

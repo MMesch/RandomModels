@@ -50,6 +50,12 @@ def power_gaussian3d(rho,scale,sigma=1.):
     kappa2 = sigma**2*a**3*PI**(3./2.)
     return kappa2*np.exp(-(rho/scale)**2/4.)
 
+#---- scale free ----
+def power_scalefree3d(rho,scale,sigma=1.):
+    a = 1./scale
+    kappa = sigma**2*(2*np.pi)**2*a**3/2
+    return kappa/(1.+(rho*a)**2)**(3./2.)
+
 #==== MAIN AND TEST FUNCTIONS ====
 def main():
     test_normalizations()
