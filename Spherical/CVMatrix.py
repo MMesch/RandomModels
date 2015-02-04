@@ -91,13 +91,8 @@ def test2():
 
     stretch = 0.5*np.ones_like(ls)
     cvmatrix_sphere2 = LayeredCovarianceMatrix(ls,radii)
-    cvmatrix_sphere2.fill_anisospherical2(rhos,power1,stretch)
+    cvmatrix_sphere2.fill_anisospherical(rhos,power1,stretch)
     cvmatrix_sphere2.plot_cvmatrix(5,loglog=True,totpower=True)
-
-    stretch = 0.5*np.ones_like(ls)
-    cvmatrix_sphere3 = LayeredCovarianceMatrix(ls,radii)
-    cvmatrix_sphere3.fill_anisospherical(rhos,power1,stretch)
-    cvmatrix_sphere3.plot_cvmatrix(5,loglog=True,totpower=True)
 
     plt.show()
 
@@ -303,40 +298,6 @@ class LayeredCovarianceMatrix(object):
                                 np.arange(s.nr),indexing='ij')
         for n in range(s.nl):
             cvmatrix_buf[:,:] = 0.
-            idx_sampl1 = stretch[n]*idx1+(1-stretch[n])*idx2
-            idx_sampl2 = stretch[n]*idx2+(1-stretch[n])*idx1
-            ipoints = np.vstack((idx_sampl1.flatten(),idx_sampl2.flatten()))
-            for irho in range(nrho):
-                cvmatrix_buf += np.outer(bessel[n,irho],bessel[n,irho])
-            cvmatrix[n] = map_coordinates(cvmatrix_buf,ipoints,mode='nearest').reshape(s.nr,s.nr)
-
-        #explicitely free bessel function memory and damp with transfer function
-        del bessel
-
-        if rtransfer is not None:
-            cvmatrix *= rtransfer
-
-        return cvmatrix
-
-    def get_anisospherical2(s, rhos, power, stretch, rtransfer=None):
-        print "computing anisotropic cv matrix from cartesian power spectrum without interpolation"
-        nrho = len(rhos)
-        #compute integrand
-        bessel = np.zeros( (s.nl,nrho,s.nr) )
-        for ir in range(s.nr):
-            for irho in range(nrho):#the factor 1/(2*s.rmax) ensures good sampling
-                bessel[s.lmin:,irho,ir] = np.sqrt(4*PI*rhos[irho]**2*power[irho]) *\
-                                    sph_jn(s.lmax,2*np.pi*rhos[irho]*s.radii[ir]/(2*s.rmax))[0]
-
-        #directly compute cvmatrix
-        cvmatrix_buf = np.zeros( (s.nr,s.nr) )
-        cvmatrix = np.zeros( (s.nl,s.nr,s.nr) )
-
-        #stretch matrix around diagonal!
-        idx1,idx2 = np.meshgrid(np.arange(s.nr),
-                                np.arange(s.nr),indexing='ij')
-        for n in range(s.nl):
-            cvmatrix_buf[:,:] = 0.
             idx_sampl1 = (1+stretch[n])/2.*idx1+(1-stretch[n])/2.*idx2
             idx_sampl2 = (1+stretch[n])/2.*idx2+(1-stretch[n])/2.*idx1
             ipoints = np.vstack((idx_sampl1.flatten(),idx_sampl2.flatten()))
@@ -391,10 +352,6 @@ class LayeredCovarianceMatrix(object):
 
     def fill_anisospherical(s,rhos,power,aniso,rtransfer=None):
         s.cvmatrix += s.get_anisospherical(rhos,power,aniso,rtransfer=rtransfer)
-        s.cvmatrix = 0.5*(s.cvmatrix + s.cvmatrix.transpose((0,2,1)))
-
-    def fill_anisospherical2(s,rhos,power,aniso,rtransfer=None):
-        s.cvmatrix += s.get_anisospherical2(rhos,power,aniso,rtransfer=rtransfer)
         s.cvmatrix = 0.5*(s.cvmatrix + s.cvmatrix.transpose((0,2,1)))
 
     def fill_horizpower(s,hpower):
