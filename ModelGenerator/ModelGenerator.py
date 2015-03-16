@@ -16,13 +16,10 @@ sys.path.append('/home/matthias/projects/gitprojects/SHTOOLS_dev/SHTOOLS')
 import pyshtools as shtools
 from seismoclasses import xcosTaper
 
-#--- required custom modules ---
-sys.path.append('/home/matthias/projects/python/random_media/paper_scripts/model_generator/model_spectra')
-from spline_model import spline_model
-
 #custom modules
 sys.path.append(os.path.join(os.path.dirname(__file__),'../CommonModules'))
 from FigStyle import style_gji
+from CovarianceFunctions import power_gaussian3d
 matplotlib.rcParams.update(style_gji)
 sys.path.append(os.path.join(os.path.dirname(__file__),'../Spherical'))
 from CVMatrix import LayeredCovarianceMatrix
@@ -64,7 +61,6 @@ class ModelGenerator3D:
         radiis_lm   = np.linspace(s.rcmb,s.rtz-dr_lowermantle,nr_lowermantle)
         radiis_um   = np.linspace(s.rtz,s.rmoho,nr_uppermantle)
         radiis = np.append(radiis_lm,radiis_um)
-        print radiis
         s.ls_cutoff = radiis/s.rearth * s.lmax #even resolution throughout the mantle
         s.ls_cutoff[s.ls_cutoff>s.lmax-1] = s.lmax-1
 
@@ -107,6 +103,12 @@ class ModelGenerator3D:
         """update point data from harmonic coefficients"""
         for ir in range(s.nr):
             s.point_data[ir] = shtools.MakeGridDH(s.coeff_data[ir],sampling=2)
+
+    def filter(s,tfunction):
+        assert len(tfunction)==s.lmax+1
+        s.coeff_data*=tfunction.reshape(1,1,s.lmax+1,1)
+        s.coeffs_interpolator = interpolate.interp1d(s.rgrid,s.coeff_data,axis=0)
+        s.update_points()
 
     def plot(s, depth, model=None, ax=None, vrange=None, lon0=0., colormap=None, projection='moll', label=None):
         if model is None:
@@ -152,6 +154,55 @@ class ModelGenerator3D:
         cbar.set_label(r'Amplitude')
         plt.title(label)
 
+    def random_mask(s,scale):
+        print '---- multiplying with random Gaussian mask to sparsify ----'
+        ls = np.arange(s.lmax+1)
+        nrhos = int((s.lmax+1)/2.)
+        rhos  = np.arange(nrhos)
+        cvmatrix = LayeredCovarianceMatrix(ls,s.rgrid)
+        power   = power_gaussian3d(2*np.pi*rhos,scale)
+        cvmatrix.fill_isospherical(rhos,power)
+
+        mask_grid   = np.zeros_like(s.point_data)
+        mask_coeffs = np.zeros_like(s.coeff_data)
+        mask_power  = np.zeros_like(s.power_spectrum)
+
+        for l in ls:
+            #multiply with Karhunen-Loeve basis
+            w,E = cvmatrix.get_basis(l,thresh=1e-4)
+            nbasis = len(w)
+            L = np.sqrt(w).reshape(1,nbasis)*E
+
+            #create uncorrelated random vectors
+            alm = np.random.normal(loc=0.,scale=1.,size=(l+1)*nbasis).reshape(nbasis,l+1)
+            blm = np.random.normal(loc=0.,scale=1.,size=(l+1)*nbasis).reshape(nbasis,l+1)
+            alm = np.dot(L,alm)
+            blm = np.dot(L,blm)
+
+            #update coefficients
+            mask_coeffs[:,0,l,:l+1] = np.real(alm)
+            mask_coeffs[:,1,l,:l+1] = np.real(blm)
+        mask_coeffs[:,:,0,:] = 0.
+
+        for ir in range(s.nr):
+            mask_grid[ir]  = shtools.MakeGridDH(mask_coeffs[ir],sampling=2)**2
+            mask_power[ir] = shtools.SHPowerSpectrum(mask_coeffs[ir])
+
+        for ir in range(s.nr):
+            s.point_data[ir]     *= mask_grid[ir]/np.sum(mask_power[ir])
+            s.coeff_data[ir]     = shtools.SHExpandDH(s.point_data[ir])
+            s.power_spectrum[ir] = shtools.SHPowerSpectrum(s.coeff_data[ir])
+
+        s.power_interpolator  = interpolate.interp1d(s.rgrid,s.power_spectrum,axis=0)
+        s.coeffs_interpolator = interpolate.interp1d(s.rgrid,s.coeff_data,axis=0)
+
+        fig,ax = plt.subplots(1,1)
+        mask_power = mask_power*ls*np.log(2)
+        minval, maxval = mask_power.max()*1e-3, mask_power.max()*2.
+        norm = matplotlib.colors.LogNorm(minval, maxval)
+        ax.imshow(mask_power,norm=norm)
+        ax.set_xlim(2**0,s.lmax)
+
     def correlate_layers(s,layer_file):
         print '---- filling with layered random model ----'
         ls = np.arange(s.lmax+1)
@@ -182,82 +233,6 @@ class ModelGenerator3D:
 
         s.power_interpolator  = interpolate.interp1d(s.rgrid,s.power_spectrum,axis=0)
         s.coeffs_interpolator = interpolate.interp1d(s.rgrid,s.coeff_data,axis=0)
-
-    def correlate_spline(s,spline_file):
-        target_model = spline_model(spline_file)
-        target_power = np.zeros( (s.nr,s.lmax+1) )
-        ls = np.arange(1,s.lmax+1)
-        for ir in range(s.nr):
-            depth = 6371. - s.rgrid[ir]
-            target_power[ir,1:] = target_model.get_power(depth,lreturn=s.lmax+1)[1:]
-        ndepths, nl = target_power.shape
-
-        for l in range(1,s.lmax+1):
-            #look for region where we are above the resolution limit
-            rmask = s.ls_cutoff<l
-            irstart = np.count_nonzero(rmask)
-            if irstart >= s.nr: irstart=s.nr-1
-            nradii = s.nr-irstart
-            #create a set of uncorrelated random vectors
-            alm = np.random.normal(loc=0.,scale=1.,size=(l+1)*nradii).reshape(nradii,l+1)
-            blm = np.random.normal(loc=0.,scale=1.,size=(l+1)*nradii).reshape(nradii,l+1)
-            #create crosspower matrix
-            cp_matrix = np.zeros( (nradii,nradii) )
-            #np.seterr(all='raise')
-            #fill crosspower matrix
-            for ir1 in range(irstart,s.nr):
-                depth1 = 6371. - s.rgrid[ir1]
-                power1 = target_power[ir1,l]/(2.*l+1)
-                for ir2 in range(irstart,s.nr):
-                    power2 = target_power[ir2,l]/(2.*l+1)
-                    depth2 = 6371. - s.rgrid[ir2]
-                    #update crosspower matrix
-                    ir1_shift = ir1 - irstart
-                    ir2_shift = ir2 - irstart
-                    if ir1 == ir2:
-                        cp_matrix[ir1_shift,ir2_shift] = np.sqrt(power1*power2)
-                    radcorr = target_model.radial_correlation(l,depth1,depth2)
-                    cp_matrix[ir1_shift,ir2_shift] = np.sqrt(power1*power2)*radcorr
-
-
-            try:#fails if matrix is not build correctly (e.g. non-symmetric)
-                w,E = eigh(cp_matrix)
-                w[w<0] = 0. #sets negative values to zero 
-                L = np.sqrt(w).reshape(1,len(w))*E
-            except Exception,e:
-                print 'testing symmetricity:'
-                print (cp_matrix.transpose() == cp_matrix).all()
-                mask = cp_matrix < 0.
-                import ipdb
-                ipdb.set_trace()
-                print np.count_nonzero(mask), 'nonzero entries'
-                print l
-                print e
-                print cp_matrix
-                raise
-            alm = np.dot(L,alm)
-            blm = np.dot(L,blm)
-            #if l==25:
-            #    print irstart
-            #    fig,axes = plt.subplots(2)
-            #    axes[0].imshow(cp_matrix)
-            #    axes[1].plot(np.sum(alm**2+blm**2,axis=1))
-            #    axes[1].plot(np.diagonal(cp_matrix)*(2*l+1))
-            #    plt.show()
-            s.coeff_data[irstart:,0,l,:l+1] = np.real(alm)
-            s.coeff_data[irstart:,1,l,:l+1] = np.real(blm)
-            s.coeff_data[:irstart,:,l,:] = 0.
-        s.coeff_data[:,:,0,:] = 0.
-
-        for ir in range(s.nr):
-            s.point_data[ir] = shtools.MakeGridDH(s.coeff_data[ir],sampling=2)
-            s.power_spectrum[ir] = shtools.SHPowerSpectrum(s.coeff_data[ir])
-
-        s.power_interpolator  = interpolate.interp1d(s.rgrid,s.power_spectrum,axis=0)
-        s.coeffs_interpolator = interpolate.interp1d(s.rgrid,s.coeff_data,axis=0)
-        #plt.figure()
-        #plt.plot(s.power_spectrum[:,25])
-        #plt.show()
 
     def get_points(s, points):
         rs = s.rgrid
@@ -335,7 +310,9 @@ class ModelGenerator3D:
         ax=fig.add_subplot(nrows,ncols,nplot,projection='spherical_section')
 
         ax.set_yticks(rticks[1:-1])
-        ax.set_yticklabels(['660','220'])
+        #ax.set_yticklabels(['660','220'])
+        ax.set_yticklabels([])
+        ax.set_xticklabels([])
 
         cm = ax.pcolormesh(ts,rs,values,cmap=colormap,norm=norm)
         cm.set_rasterized(True)
@@ -404,15 +381,15 @@ class ModelGenerator3D:
         return coeffs
 
     #======= OUTPUT ========
-    def writecoefffile(s,fname):
+    def writecoefffile(s,fname,modelname='noname'):
         #write header
         print 'writing coefficient file %s'%fname
         outfile = open(fname,'w')
-        header = 'nlayer lmax rmin rmax\n%d %d %.2f %.2f\n'%(s.nr, s.lmax, s.rgrid[0], s.rgrid[-1])
+        header = 'nlayer lmax rmin rmax\n%d %d %.2f %.2f %s\n'%(s.nr, s.lmax, s.rgrid[0], s.rgrid[-1],modelname)
         outfile.write(header)
         for ir,l_cutoff in enumerate(s.ls_cutoff):
             coeffs = s.coeff_data[ir]*np.sqrt(4.*np.pi) #remove 4pi normalization
-            coeffs[:,:,0]*=np.sqrt(2)
+            coeffs[:,:,0]*=np.sqrt(2) #for complex spherical harmonics routine
             radius  = s.rgrid[ir]
             outfile.write('%d %d\n'%(radius,int(l_cutoff)))
             for il in range(int(l_cutoff)+1):
@@ -508,14 +485,15 @@ class ModelGenerator3D:
             ltrim = min(s.lmax+1,lmax_target+1)
             coeffs_model[:,:ltrim,:ltrim] = target_model.get_coeffs(depth)[:,:ltrim,:ltrim]
             if gradient:
-                grid_model = shtools.MakeGridDH(coeffs_model[:,:35,:35],lmax=s.lmax,sampling=2)
+                grid_model = shtools.MakeGridDH(coeffs_model[:,:45,:45],lmax=s.lmax,sampling=2)
                 grad_model = get_gradient(grid_model)
                 interval = 180./s.nlat
                 weights = np.cos(np.radians(np.linspace(-90.+interval/2.,90.-interval/2.,s.nlat)))
                 norm = np.sum(grad_model**2*weights.reshape(s.nlat,1))/(weights.sum()*s.nlon)
-                grad_model /= 1.4*np.sqrt(norm)
-                filt = xcosTaper(np.arange(s.lmax+1),(10.,20.,70,200))
-                grid_rand = shtools.MakeGridDH(coeffs_rand*filt.reshape(1,s.lmax+1,1),sampling=2)*grad_model
+                grad_model /= np.sqrt(norm)
+                #filt = xcosTaper(np.arange(s.lmax+1),(10.,20.,70,200))
+                #grid_rand = shtools.MakeGridDH(coeffs_rand*filt.reshape(1,s.lmax+1,1),sampling=2)*grad_model
+                grid_rand = shtools.MakeGridDH(coeffs_rand,sampling=2)*grad_model
                 coeffs_rand = shtools.SHExpandDH(grid_rand,sampling=2)
 
             if model_only:
@@ -567,7 +545,8 @@ class ModelGenerator3D:
         s.power_interpolator  = interpolate.interp1d(s.rgrid,s.power_spectrum,axis=0)
         s.coeffs_interpolator = interpolate.interp1d(s.rgrid,s.coeff_data,axis=0)
 
-    def plot_harmonic_spectrum(s,ax=None, model=None, nr_image=200, peroctave=True, logx=True, cbar=True):
+    def plot_harmonic_spectrum(s,ax=None, model=None, nr_image=200, peroctave=True, logx=True, 
+                                 cbar=True, cutoff=False):
         """
         plots the harmonic spectrum for all layers as colormap
         """
@@ -600,7 +579,7 @@ class ModelGenerator3D:
             levels = np.logspace(np.log10(minval),np.log10(maxval),16)
             cblabel = 'power per octave'
             lgrid, depgrid = np.meshgrid(ls[1:],depths)
-            cs = ax.contourf(lgrid,depgrid, np.clip(power,minval,maxval)[:,1:], levels, norm=norm)
+            cs = plot_matrix(ax,lgrid,depgrid,np.clip(power,minval,maxval),levels,norm)
         else:
             minval, maxval = 1e-7, 1e-4
             norm = matplotlib.colors.LogNorm(minval, maxval, clip=True)
@@ -619,10 +598,11 @@ class ModelGenerator3D:
 
         ylims = np.array( [depths[-1],depths[0]] )
         ax.set_ylim(*tuple(ylims))
+        if cutoff:
+            ax.plot(s.ls_cutoff,6371.-s.rgrid,lw=2,c='black')
         #vertical lines for kilometer resolution
         def km2deg(km,dep):
             return (6371.-dep)*2.*np.pi/km/2.
-        #ax.plot(km2deg(10000.,s.depths),s.depths,c='black')
         #ax.plot(km2deg(1000.,s.depths),s.depths,c='black')
         #make good looking colorbar
         #fig.tight_layout(pad=0.1)
@@ -662,4 +642,35 @@ def get_gradient(grid):
     for ilon in range(nlon):
         tgradient[:,ilon] = np.gradient(grid[:,ilon])
     return np.sqrt(tgradient**2 + pgradient**2)
+
+#-- rasterization hack --
+from matplotlib.collections import Collection
+from matplotlib.artist import allow_rasterization 
+
+class ListCollection(Collection):
+     def __init__(self, collections, **kwargs):
+         Collection.__init__(self, **kwargs)
+         self.set_collections(collections)
+     def set_collections(self, collections):
+         self._collections = collections
+     def get_collections(self):
+         return self._collections
+     @allow_rasterization
+     def draw(self, renderer):
+         for _c in self._collections:
+             _c.draw(renderer)
+
+def insert(c,ax):
+     collections = c.collections
+     for _c in collections:
+         _c.remove()
+     cc = ListCollection(collections, rasterized=True)
+     ax.add_artist(cc)
+     return cc 
+
+def plot_matrix(ax, lgrid, depgrid, matrix, levels, norm):
+    cs = ax.contourf(lgrid,depgrid, matrix[:,1:], levels, norm=norm)
+    ax.set_aspect(30)
+    insert(cs,ax)
+    return cs
 

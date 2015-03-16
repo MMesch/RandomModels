@@ -406,7 +406,7 @@ class LayeredCovarianceMatrix(object):
         mesh = axes[0].pcolormesh(rgrid1,rgrid2,s.cvmatrix[order],shading='gouraud')
         mesh.set_rasterized(True)
         del rgrid1,rgrid2
-        axes[0].set_xlabel('radius 1')
+        axes[0].set_xlabel('a)    radius 1')
         axes[0].set_ylabel('radius 2')
         axes[0].set_xlim(s.rmin,s.rmax)
         axes[0].set_ylim(s.rmax,s.rmin)
@@ -418,15 +418,16 @@ class LayeredCovarianceMatrix(object):
         mesh.set_rasterized(True)
         del lgrid,rgrid
         axes[1].set_ylabel('radius')
-        axes[1].set_xlabel('degree l')
+        axes[1].set_xlabel('b)    degree l')
         if loglog:
             axes[1].set_xscale('log',basex=2)
             axes[1].set_yscale('log',basex=2)
             axes[1].set_xlim(1,s.lmax)
             axes[1].set_ylim(s.rmax,0.01)
         else:
-            axes[1].set_xlim(0,s.lmax)
-            axes[1].set_ylim(s.rmax,0)
+            axes[1].set_xscale('log',basex=2)
+            axes[1].set_xlim(1,s.lmax)
+            axes[1].set_ylim(0,s.rmax)
 
         fig.tight_layout(pad=0.1)
         #labels = ['a)','b)']

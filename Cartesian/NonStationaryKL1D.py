@@ -42,21 +42,33 @@ def main():
     #---- compute eigenvectors and values ----
     print 'computing eigenvectors and values with cholesky method'
     evals,evecs = eigh(cvmatrix)
-    evals[evals<evals.max()*1e-2] *= 0.
+    mask = evals>evals.max()*1e-2
+    evecs_masked = evecs[:,mask]
+    evals_masked = evals[mask]
+    npoints,nvecs = evecs_masked.shape
 
     #---- plot covariance matrix ----
-    plt.figure()
+    defFigsize = mpl.rcParams['figure.figsize']
+    cubesize = defFigsize[0],defFigsize[0]
+    fig=plt.figure(figsize=cubesize)
     plt.imshow(cvmatrix)
-    plt.title('Covariance Matrix')
+    plt.xlabel("coordinate r")
+    plt.ylabel("coordinate r'")
+    #plt.title('Covariance Matrix')
+    fig.tight_layout(pad=0.1)
 
     #---- plot eigenvectors ----
-    plt.figure()
-    plt.imshow( (evecs*np.sqrt(evals).reshape(1,len(evals)))[:,::-1] )
+    fig=plt.figure()
+    plt.imshow( evecs[:,::-1] )
     plt.title('Eigenvectors')
+    fig.tight_layout(pad=0.1)
 
-    plt.figure()
-    plt.plot( evecs*np.sqrt(evals).reshape(1,len(evals)) )
-    plt.title('Eigenvectors')
+    fig=plt.figure()
+    plt.plot( (evecs_masked*np.sqrt(evals_masked).reshape(1,nvecs))[:,-25:] )
+    plt.xlabel('coordinate r')
+    plt.ylabel('amplitude')
+    #plt.title('Eigenvectors')
+    fig.tight_layout(pad=0.1)
 
     #---- plot eigenvalues ----
     plt.figure()
@@ -64,20 +76,24 @@ def main():
     plt.title('Eigenvalues')
 
     #---- cumulative sum/ evalues ----
-    plt.figure()
+    fig=plt.figure()
     cumsum = np.cumsum(evals[::-1])
     plt.plot(cumsum/cumsum.max())
-    plt.title('Eigenvalues')
+    #plt.title('Eigenvalues')
+    fig.tight_layout(pad=0.1)
 
     #---- compute random model ----
-    coeffs = np.random.normal(loc=0.,scale=1.,size=nx)
-    values = np.dot(np.sqrt(evals).reshape(1,nx)*evecs,coeffs)
+    coeffs = np.random.normal(loc=0.,scale=1.,size=nvecs)
+    values = np.dot(np.sqrt(evals_masked).reshape(1,nvecs)*evecs_masked,coeffs)
     values = values.reshape(nx)
 
     #---- plot random model section ----
-    plt.figure()
+    fig=plt.figure()
     plt.plot(values)
-    plt.title('model section')
+    #plt.title('model section')
+    plt.ylabel("amplitude")
+    plt.xlabel("coordinate r")
+    fig.tight_layout(pad=0.1)
 
     plt.show()
 

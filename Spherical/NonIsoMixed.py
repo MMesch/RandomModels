@@ -50,12 +50,12 @@ def main():
     cvmatrix_sphere = LayeredCovarianceMatrix(ls,radii)
     mat1 = cvmatrix_sphere.get_isospherical(rhos,power1)
 
-    tfuncs_ani = make_partition([-1,10.,22.,nl],[0.,2.,5.,0.],ls)
-    stretch2 = tfuncs_ani[0]*0.1 + tfuncs_ani[1]*0.1+tfuncs_ani[1]*1.0
+    tfuncs_ani = make_partition([-1,12.,nl],[0.,6.,0.],ls)
+    stretch2 = tfuncs_ani[0]*0.2 +tfuncs_ani[1]*1.0
     mat2 = cvmatrix_sphere.get_anisospherical(rhos,power2,stretch2)
 
-    tfuncs_ani = make_partition([-1,7.,20.,nl],[0.,4.,7.,0.],ls)
-    stretch3 = tfuncs_ani[0]*0.1 + tfuncs_ani[1]*1.4 + tfuncs_ani[2]*1.0
+    tfuncs_ani = make_partition([-1,7.,15.,nl],[0.,5.,5.,0.],ls)
+    stretch3 = tfuncs_ani[0]*0.8 + tfuncs_ani[1]*2. + tfuncs_ani[2]*1.0
     mat3 = cvmatrix_sphere.get_anisospherical(rhos,power3,stretch3)
 
     #II. combine cvmatrices
@@ -74,14 +74,14 @@ def main():
     partition = np.outer(tfuncs[0],tfuncs[1])
     cvmatrix_sphere.cvmatrix += 0.5*(mat1+mat2)*(partition+partition.transpose())
 
-    cvmatrix_sphere.plot_cvmatrix(5,loglog=True,totpower=True)
+    cvmatrix_sphere.plot_cvmatrix(9,loglog=False,totpower=True)
 
     del partition,mat1,mat2,mat3
 
     #---- create a model realization ----
-    #model_sphere = LayeredSphere(cvmatrix_sphere)
-    #model_sphere.plot_section()
-    #model_sphere.write_vtk()
+    model_sphere = LayeredSphere(cvmatrix_sphere)
+    model_sphere.plot_section()
+    model_sphere.write_vtk()
 
     plt.show()
 
